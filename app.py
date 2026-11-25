@@ -1,7 +1,20 @@
+import os
+from functools import wraps
 from urllib.parse import quote
-from flask import Flask, request, redirect, url_for, render_template_string, make_response
+from flask import Flask, request, redirect, url_for, render_template_string, make_response, session
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "anticero-clave-secreta-2026-cambiar")
+
+# =========================================================
+# USUARIOS Y CONTRASEÑAS ÚNICAS QUE TÚ ASIGNAS
+# Formato: "usuario": "contraseña_unica"
+# =========================================================
+USUARIOS_AUTORIZADOS = {
+    "jesus": "Anticero2026!",
+    "caja1": "Caja01#2026",
+    "motorizado1": "Moto01#2026",
+}
 
 opciones_venta = [
     {"id": 1, "producto": "1/4 Pollo + Papas", "precio": 22.00, "activa": True},
@@ -11,9 +24,115 @@ pedidos_pendientes = []
 pedidos_enviados = []
 pedidos_rechazados = []
 ultimo_confirmado = None
-contador_id = 1
+contador_id = 3
 
 FORMAS_PAGO = ["Efectivo", "Yape", "Plin", "Tarjeta"]
+
+HTML_LOGIN = """
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acceso - Tablero de Pedidos</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0f172a;
+      color: #1e293b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+    }
+    .login-card {
+      background: #ffffff;
+      width: 100%;
+      max-width: 390px;
+      padding: 26px 24px;
+      border-radius: 14px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+      border-top: 5px solid #16a34a;
+    }
+    .login-card h1 {
+      margin: 0 0 6px;
+      font-size: 21px;
+      color: #0f172a;
+    }
+    .login-card p {
+      margin: 0 0 18px;
+      font-size: 13.5px;
+      color: #64748b;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 5px;
+      color: #334155;
+    }
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+    }
+    input:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+    }
+    button {
+      width: 100%;
+      padding: 11px;
+      background: #16a34a;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.07); }
+    .err {
+      background: #fee2e2;
+      color: #7f1d1d;
+      border: 1px solid #fca5a5;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h1>Acceso al Sistema</h1>
+    <p>Ingresa el usuario y contraseña única asignados para continuar al tablero de pedidos.</p>
+
+    {% if error %}
+      <div class="err">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('login') }}">
+      <label for="usuario">Usuario</label>
+      <input type="text" id="usuario" name="usuario" placeholder="Ej. caja1" required autofocus>
+
+      <label for="password">Contraseña única</label>
+      <input type="password" id="password" name="password" placeholder="Ingresa tu contraseña" required>
+
+      <button type="submit">Ingresar a pedidos</button>
+    </form>
+  </div>
+</body>
+</html>
+"""
 
 HTML = """
 <!doctype html>
@@ -42,6 +161,24 @@ HTML = """
       margin-bottom: 16px;
     }
     .topbar h1 { margin: 0; font-size: 22px; }
+    .user-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #cbd5e1;
+    }
+    .btn-salir {
+      background: #334155;
+      color: #f8fafc;
+      padding: 6px 12px;
+      font-size: 12.5px;
+      border-radius: 7px;
+      text-decoration: none;
+      font-weight: 600;
+      border: 1px solid #475569;
+    }
+    .btn-salir:hover { background: #dc2626; border-color: #dc2626; }
     .kpis {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -173,7 +310,10 @@ HTML = """
 
   <div class="topbar">
     <h1>Tablero de Pedidos y Reparto</h1>
-    <span style="font-size:13px; color:#94a3b8;">Sistema interno activo</span>
+    <div class="user-box">
+      <span>Usuario: <strong>{{ usuario_actual }}</strong></span>
+      <a href="{{ url_for('logout') }}" class="btn-salir">Cerrar sesión</a>
+    </div>
   </div>
 
   {% if msg_ok %}
@@ -372,6 +512,14 @@ HTML = """
 </html>
 """
 
+def login_requerido(f):
+    @wraps(f)
+    def decorada(*args, **kwargs):
+        if "usuario" not in session:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorada
+
 def redirigir_tablero(ok="", err=""):
     destino = url_for("index")
     params = []
@@ -386,12 +534,34 @@ def redirigir_tablero(ok="", err=""):
     resp.headers["Pragma"] = "no-cache"
     return resp
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        usuario = request.form.get("usuario", "").strip()
+        password = request.form.get("password", "").strip()
+        if usuario in USUARIOS_AUTORIZADOS and USUARIOS_AUTORIZADOS[usuario] == password:
+            session["usuario"] = usuario
+            return redirect(url_for("index"))
+        error = "Usuario o contraseña incorrectos."
+    resp = make_response(render_template_string(HTML_LOGIN, error=error))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+@app.route("/logout")
+def logout():
+    session.pop("usuario", None)
+    return redirect(url_for("login"))
+
 @app.route("/")
+@login_requerido
 def index():
     activas = [op for op in opciones_venta if op.get("activa", True)]
     total_enviado = sum(p["total"] for p in pedidos_enviados)
     html = render_template_string(
         HTML,
+        usuario_actual=session.get("usuario", ""),
         opciones_activas=activas,
         formas_pago=FORMAS_PAGO,
         pendientes=pedidos_pendientes,
@@ -408,6 +578,7 @@ def index():
     return resp
 
 @app.route("/agregar_opcion", methods=["POST"])
+@login_requerido
 def agregar_opcion():
     global contador_id
     producto = request.form.get("producto", "").strip()
@@ -427,6 +598,7 @@ def agregar_opcion():
     return redirigir_tablero(err="Completa el nombre y un precio válido.")
 
 @app.route("/retirar_opcion/<int:opcion_id>", methods=["POST"])
+@login_requerido
 def retirar_opcion(opcion_id):
     for op in opciones_venta:
         if op["id"] == opcion_id:
@@ -435,6 +607,7 @@ def retirar_opcion(opcion_id):
     return redirigir_tablero()
 
 @app.route("/confirmar_pedido", methods=["POST"])
+@login_requerido
 def confirmar_pedido():
     global contador_id, ultimo_confirmado
     cliente = request.form.get("cliente", "").strip()
@@ -478,6 +651,7 @@ def confirmar_pedido():
     return redirigir_tablero(ok=f"Pedido #{pedido['id']} de {cliente} registrado en Pendientes.")
 
 @app.route("/marcar_enviado/<int:pedido_id>", methods=["POST"])
+@login_requerido
 def marcar_enviado(pedido_id):
     for i, p in enumerate(pedidos_pendientes):
         if p["id"] == pedido_id:
@@ -486,6 +660,7 @@ def marcar_enviado(pedido_id):
     return redirigir_tablero()
 
 @app.route("/marcar_rechazado/<origen>/<int:pedido_id>", methods=["POST"])
+@login_requerido
 def marcar_rechazado(origen, pedido_id):
     lista = pedidos_pendientes if origen == "pendientes" else pedidos_enviados
     for i, p in enumerate(lista):
