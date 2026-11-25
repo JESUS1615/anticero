@@ -1,3 +1,4 @@
+import calendar
 import json
 import os
 from collections import defaultdict
@@ -15,7 +16,6 @@ ARCHIVO_DATOS = os.environ.get("DATA_FILE", "datos_anticero.json")
 
 # =========================================================
 # CÓDIGO ÚNICO DE PROGRAMADOR (SOLO TÚ LO SABES)
-# Sirve para reactivar / renovar la licencia mensual cuando venza
 # =========================================================
 CODIGO_MAESTRO_PROGRAMADOR = os.environ.get("DEV_MASTER_CODE", "PROG-ANTICERO-2026")
 
@@ -30,8 +30,58 @@ USUARIOS_OPERADORES = {
 
 FORMAS_PAGO = ["Efectivo", "Yape", "Plin", "Tarjeta"]
 
+DIAS_CORTO_ES = {
+    0: "Lun",
+    1: "Mar",
+    2: "Mié",
+    3: "Jue",
+    4: "Vie",
+    5: "Sáb",
+    6: "Dom",
+}
+
+DIAS_LARGO_ES = {
+    0: "Lunes",
+    1: "Martes",
+    2: "Miércoles",
+    3: "Jueves",
+    4: "Viernes",
+    5: "Sábado",
+    6: "Domingo",
+}
+
+MESES_ES = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
+}
+
 def fecha_hoy_peru():
     return datetime.now(ZONA_HORARIA).date()
+
+def generar_rango_3_anos_meses(fecha_base):
+    """Genera 36 meses consecutivos (3 años) desde el mes actual."""
+    meses = []
+    anio = fecha_base.year
+    mes = fecha_base.month
+    for _ in range(36):
+        clave = f"{anio:04d}-{mes:02d}"
+        etiqueta = f"{MESES_ES[mes]} {anio}"
+        meses.append({"clave": clave, "etiqueta": etiqueta})
+        mes += 1
+        if mes > 12:
+            mes = 1
+            anio += 1
+    return meses
 
 def datos_iniciales():
     hoy = fecha_hoy_peru()
@@ -49,7 +99,7 @@ def datos_iniciales():
         "pedidos_pendientes": [],
         "pedidos_enviados": [],
         "pedidos_rechazados": [],
-        "ventas_registradas": [],  # Cada venta: {"id", "fecha", "pedido_id", "cliente", "detalle", "forma_pago", "total"}
+        "ventas_registradas": [],
         "ultimo_confirmado": None,
         "contador_id": 3,
     }
@@ -89,6 +139,21 @@ def estado_licencia(data):
     if dias_restantes < 0:
         return False, dias_restantes, fecha_cierre.strftime("%d/%m/%Y")
     return True, dias_restantes, fecha_cierre.strftime("%d/%m/%Y")
+
+def requiere_licencia_y_login(f):
+    @wraps(f)
+    def decorada(*args, **kwargs):
+        data = cargar_datos()
+        vigente, _, _ = estado_licencia(data)
+        if not vigente:
+            session.pop("usuario", None)
+            return redirect(url_for("licencia_vencida"))
+        usuario = session.get("usuario")
+        if not usuario or usuario not in USUARIOS_OPERADORES:
+            session.pop("usuario", None)
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorada
 
 HTML_LICENCIA_VENCIDA = """
 <!doctype html>
@@ -130,13 +195,7 @@ HTML_LICENCIA_VENCIDA = """
       font-size: 13px;
       margin-bottom: 16px;
     }
-    label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 5px;
-      color: #334155;
-    }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: #334155; }
     input {
       width: 100%;
       padding: 10px 12px;
@@ -156,52 +215,22 @@ HTML_LICENCIA_VENCIDA = """
       font-weight: 700;
       cursor: pointer;
     }
-    button:hover { filter: brightness(1.07); }
-    .err {
-      background: #fee2e2;
-      color: #7f1d1d;
-      border: 1px solid #fca5a5;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 14px;
-    }
-    .ok {
-      background: #dcfce7;
-      color: #14532d;
-      border: 1px solid #86efac;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 14px;
-    }
+    .err { background: #fee2e2; color: #7f1d1d; border: 1px solid #fca5a5; padding: 10px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 14px; }
+    .ok { background: #dcfce7; color: #14532d; border: 1px solid #86efac; padding: 10px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 14px; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Programa Cerrado — Licencia Vencida</h1>
     <p>El ciclo mensual del sistema ha finalizado. Para reactivarlo por otro mes, ingresa el código único de programador.</p>
-
-    <div class="box-info">
-      <strong>Fecha de cierre anterior:</strong> {{ fecha_cierre_texto }}
-    </div>
-
-    {% if error %}
-      <div class="err">{{ error }}</div>
-    {% endif %}
-    {% if ok %}
-      <div class="ok">{{ ok }}</div>
-    {% endif %}
-
+    <div class="box-info"><strong>Fecha de cierre anterior:</strong> {{ fecha_cierre_texto }}</div>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    {% if ok %}<div class="ok">{{ ok }}</div>{% endif %}
     <form method="post" action="{{ url_for('activar_licencia') }}">
       <label for="codigo_prog">Código de programador</label>
       <input type="password" id="codigo_prog" name="codigo_prog" placeholder="Ingresa tu código maestro" required autofocus>
-
       <label for="dias_extra">Duración de renovación (días)</label>
       <input type="number" id="dias_extra" name="dias_extra" min="1" max="365" value="30" required>
-
       <button type="submit">Activar nueva licencia mensual</button>
     </form>
   </div>
@@ -251,13 +280,7 @@ HTML_LOGIN = """
       font-weight: 700;
       margin-bottom: 16px;
     }
-    label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 5px;
-      color: #334155;
-    }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: #334155; }
     input {
       width: 100%;
       padding: 10px 12px;
@@ -277,17 +300,7 @@ HTML_LOGIN = """
       font-weight: 700;
       cursor: pointer;
     }
-    button:hover { filter: brightness(1.07); }
-    .err {
-      background: #fee2e2;
-      color: #7f1d1d;
-      border: 1px solid #fca5a5;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 14px;
-    }
+    .err { background: #fee2e2; color: #7f1d1d; border: 1px solid #fca5a5; padding: 10px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 14px; }
   </style>
 </head>
 <body>
@@ -295,18 +308,12 @@ HTML_LOGIN = """
     <h1>Acceso al Sistema</h1>
     <p>Ingresa tu usuario y contraseña única asignados para continuar a pedidos.</p>
     <div class="lic-tag">Licencia vigente hasta {{ fecha_cierre_texto }} ({{ dias_restantes }} días)</div>
-
-    {% if error %}
-      <div class="err">{{ error }}</div>
-    {% endif %}
-
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
     <form method="post" action="{{ url_for('login') }}">
       <label for="usuario">Usuario</label>
       <input type="text" id="usuario" name="usuario" placeholder="Ej. caja1" required autofocus>
-
       <label for="password">Contraseña única</label>
       <input type="password" id="password" name="password" placeholder="Ingresa tu contraseña" required>
-
       <button type="submit">Ingresar a pedidos</button>
     </form>
   </div>
@@ -314,18 +321,18 @@ HTML_LOGIN = """
 </html>
 """
 
-HTML = """
+HTML_INDEX = """
 <!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tablero de Pedidos y Ventas</title>
+  <title>Tablero de Pedidos</title>
   <style>
     * { box-sizing: border-box; }
     body {
       font-family: 'Segoe UI', Arial, sans-serif;
-      max-width: 1120px;
+      max-width: 1140px;
       margin: 18px auto;
       padding: 0 14px;
       background: #0f172a;
@@ -358,6 +365,16 @@ HTML = """
       color: #e2e8f0;
     }
     .pill.alerta { border-color: #f59e0b; color: #fde68a; }
+    .btn-balance {
+      background: #2563eb;
+      color: #ffffff;
+      padding: 7px 14px;
+      font-size: 13px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .btn-balance:hover { filter: brightness(1.08); }
     .btn-salir {
       background: #334155;
       color: #f8fafc;
@@ -468,7 +485,6 @@ HTML = """
     .fila-enviado { background: #f0fdf4; }
     .card-rechazados { border-top: 5px solid #f59e0b; }
     .fila-rechazado { background: #fffbeb; }
-    .card-ventas { border-top: 5px solid #2563eb; }
 
     .badge {
       display: inline-block;
@@ -481,70 +497,19 @@ HTML = """
     .badge-verde { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
     .badge-ambar { background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; }
     .badge-pago { background: #e0e7ff; color: #1d4ed8; }
-    .badge-max { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-    .badge-min { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
     .acciones { display: flex; gap: 6px; flex-wrap: wrap; }
-
-    .resumen-extremos {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-      gap: 10px;
-      margin: 12px 0 16px;
-    }
-    .extremo-box {
-      padding: 12px;
-      border-radius: 10px;
-      border: 1px solid #e2e8f0;
-      background: #f8fafc;
-    }
-    .extremo-box.max { border-left: 5px solid #16a34a; background: #f0fdf4; }
-    .extremo-box.min { border-left: 5px solid #dc2626; background: #fef2f2; }
-    .extremo-box small { color: #475569; display: block; font-weight: 600; }
-    .extremo-box strong { font-size: 16px; color: #0f172a; }
-
-    .grafico-wrap {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      padding: 14px;
-      margin-bottom: 16px;
-    }
-    .barra-fila {
-      display: grid;
-      grid-template-columns: 105px 1fr 125px;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 8px;
-      font-size: 13px;
-    }
-    .barra-pista {
-      background: #e2e8f0;
-      border-radius: 999px;
-      height: 18px;
-      overflow: hidden;
-    }
-    .barra-relleno {
-      height: 100%;
-      background: #2563eb;
-      border-radius: 999px;
-      transition: width .25s ease;
-    }
-    .barra-relleno.dia-max { background: #16a34a; }
-    .barra-relleno.dia-min { background: #dc2626; }
   </style>
 </head>
 <body>
 
   <div class="topbar">
-    <h1>Tablero de Pedidos y Ventas</h1>
+    <h1>Tablero de Pedidos y Reparto</h1>
     <div class="user-box">
       <span>Usuario: <strong>{{ usuario_actual }}</strong></span>
       <span class="pill {% if dias_restantes is not none and dias_restantes <= 5 %}alerta{% endif %}">
         Licencia vence {{ fecha_cierre_texto }} ({{ dias_restantes }}d)
       </span>
-      <a href="#seccion-ventas" class="pill" style="text-decoration:none; background:#1d4ed8; border-color:#1d4ed8; color:#fff; font-weight:700;">
-        Ir a Ventas y Balance
-      </a>
+      <a href="{{ url_for('balance_mensual') }}" target="_blank" rel="noopener noreferrer" class="btn-balance">Balance</a>
       <a href="{{ url_for('logout') }}" class="btn-salir">Cerrar sesión</a>
     </div>
   </div>
@@ -566,11 +531,11 @@ HTML = """
       <strong>{{ enviados|length }}</strong>
     </div>
     <div class="kpi ambar">
-      <span>No contesta / Ya no lo quiso</span>
+      <span>Cancelados / No contesta</span>
       <strong>{{ rechazados|length }}</strong>
     </div>
     <div class="kpi">
-      <span>Total ventas acumuladas (S/)</span>
+      <span>Total dinero ingresado (S/)</span>
       <strong>S/ {{ "%.2f"|format(total_ventas_hist) }}</strong>
     </div>
   </div>
@@ -598,8 +563,12 @@ HTML = """
   </div>
 
   <div class="card">
-    <h2>2. Registrar pedido</h2>
-    <form method="post" action="{{ url_for('confirmar_pedido') }}">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <h2 style="margin:0;">2. Tabla de Cliente y Registro de Pedido</h2>
+      <a href="{{ url_for('balance_mensual') }}" target="_blank" rel="noopener noreferrer" class="btn-balance">Balance</a>
+    </div>
+
+    <form method="post" action="{{ url_for('confirmar_pedido') }}" style="margin-top:12px;">
       <div class="fila">
         <input type="text" name="cliente" placeholder="Nombre del cliente" required style="flex:1; min-width:180px;">
         <input type="text" name="celular" placeholder="Celular del cliente (motorizado)" required style="flex:1; min-width:180px;">
@@ -623,7 +592,7 @@ HTML = """
     </form>
 
     {% if confirmado %}
-      <h3 style="margin-top:16px;">Tabla de pedido confirmado</h3>
+      <h3 style="margin-top:16px;">Tabla de cliente / pedido confirmado</h3>
       <div class="table-wrap">
         <table>
           <tr>
@@ -668,7 +637,7 @@ HTML = """
                   <button type="submit" class="enviar">Marcar enviado</button>
                 </form>
                 <form method="post" action="{{ url_for('marcar_rechazado', origen='pendientes', pedido_id=p.id) }}" style="margin:0;">
-                  <button type="submit" class="rechazar">No contesta / Ya no lo quiso</button>
+                  <button type="submit" class="rechazar">Cancelar / No contesta</button>
                 </form>
               </div>
             </td>
@@ -702,7 +671,7 @@ HTML = """
             <td><strong>S/ {{ "%.2f"|format(p.total) }}</strong></td>
             <td>
               <form method="post" action="{{ url_for('marcar_rechazado', origen='enviados', pedido_id=p.id) }}" style="margin:0;">
-                <button type="submit" class="rechazar">No contesta / Ya no lo quiso</button>
+                <button type="submit" class="rechazar">Cancelar / No contesta</button>
               </form>
             </td>
           </tr>
@@ -715,7 +684,7 @@ HTML = """
 
   <div class="card card-rechazados">
     <h2>
-      <span>5. No contesta / Ya no lo quiso</span>
+      <span>5. Cancelados / No contesta</span>
       <span class="badge badge-ambar">{{ rechazados|length }} casos</span>
     </h2>
     <div class="table-wrap">
@@ -726,7 +695,7 @@ HTML = """
         {% for p in rechazados %}
           <tr class="fila-rechazado">
             <td>{{ p.id }}</td>
-            <td><span class="badge badge-ambar">No contesta / Ya no lo quiso</span></td>
+            <td><span class="badge badge-ambar">Cancelado / No contesta</span></td>
             <td><strong>{{ p.cliente }}</strong></td>
             <td>{{ p.celular }}</td>
             <td>{{ p.direccion }}</td>
@@ -735,107 +704,7 @@ HTML = """
             <td>S/ {{ "%.2f"|format(p.total) }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="8">No hay pedidos marcados como no contesta o ya no lo quiso.</td></tr>
-        {% endfor %}
-      </table>
-    </div>
-  </div>
-
-  <div id="seccion-ventas" class="card card-ventas">
-    <h2>
-      <span>6. Ventas, Balance por Día y Gráfico Mensual</span>
-      <span class="badge badge-pago">{{ ventas|length }} ventas guardadas</span>
-    </h2>
-
-    <form method="get" action="{{ url_for('index') }}" class="fila" style="margin-bottom:12px;">
-      <label for="mes" style="font-size:13px; font-weight:700; margin:0;">Mes del balance:</label>
-      <select id="mes" name="mes" onchange="this.form.submit()">
-        {% for m in meses_disponibles %}
-          <option value="{{ m }}" {% if m == mes_seleccionado %}selected{% endif %}>{{ m }}</option>
-        {% endfor %}
-      </select>
-      <span style="font-size:13px; color:#475569;">
-        Total del mes (<strong>{{ mes_seleccionado }}</strong>): <strong>S/ {{ "%.2f"|format(total_mes) }}</strong>
-      </span>
-    </form>
-
-    {% if balance_diario %}
-      <div class="resumen-extremos">
-        <div class="extremo-box max">
-          <small>DÍA QUE SE VENDIÓ MÁS</small>
-          <strong>{{ dia_mayor.fecha }} — S/ {{ "%.2f"|format(dia_mayor.total) }}</strong>
-          <div style="font-size:12.5px; color:#166534;">{{ dia_mayor.cantidad }} pedido(s) enviado(s)</div>
-        </div>
-        <div class="extremo-box min">
-          <small>DÍA QUE SE VENDIÓ MENOS</small>
-          <strong>{{ dia_menor.fecha }} — S/ {{ "%.2f"|format(dia_menor.total) }}</strong>
-          <div style="font-size:12.5px; color:#991b1b;">{{ dia_menor.cantidad }} pedido(s) enviado(s)</div>
-        </div>
-      </div>
-
-      <div class="grafico-wrap">
-        <strong style="display:block; margin-bottom:10px; color:#0f172a;">
-          Gráfico comparativo de ventas por día ({{ mes_seleccionado }})
-        </strong>
-        {% for d in balance_diario %}
-          {% set pct = (d.total / max_venta_dia * 100) if max_venta_dia > 0 else 0 %}
-          <div class="barra-fila">
-            <span><strong>{{ d.fecha }}</strong></span>
-            <div class="barra-pista">
-              <div class="barra-relleno {% if d.fecha == dia_mayor.fecha %}dia-max{% elif d.fecha == dia_menor.fecha and balance_diario|length > 1 %}dia-min{% endif %}" style="width: {{ '%.1f'|format(pct) }}%;"></div>
-            </div>
-            <span style="text-align:right; font-weight:700;">S/ {{ "%.2f"|format(d.total) }} ({{ d.cantidad }})</span>
-          </div>
-        {% endfor %}
-      </div>
-
-      <h3 style="margin:12px 0 6px;">Balance detallado por día</h3>
-      <div class="table-wrap">
-        <table>
-          <tr>
-            <th>Fecha</th><th>Pedidos enviados</th><th>Total vendido (S/)</th><th>Indicador</th>
-          </tr>
-          {% for d in balance_diario %}
-            <tr>
-              <td><strong>{{ d.fecha }}</strong></td>
-              <td>{{ d.cantidad }}</td>
-              <td><strong>S/ {{ "%.2f"|format(d.total) }}</strong></td>
-              <td>
-                {% if d.fecha == dia_mayor.fecha %}
-                  <span class="badge badge-max">Mayor venta</span>
-                {% elif d.fecha == dia_menor.fecha and balance_diario|length > 1 %}
-                  <span class="badge badge-min">Menor venta</span>
-                {% else %}
-                  <span style="color:#64748b; font-size:12.5px;">Normal</span>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </table>
-      </div>
-    {% else %}
-      <p style="color:#64748b; font-size:13.5px; margin:8px 0 14px;">
-        Aún no hay ventas registradas en el mes {{ mes_seleccionado }}. Cuando marques un pedido como <strong>Marcar enviado</strong>, aparecerá aquí y en el gráfico diario.
-      </p>
-    {% endif %}
-
-    <h3 style="margin:18px 0 6px;">Registro guardado de ventas</h3>
-    <div class="table-wrap">
-      <table>
-        <tr>
-          <th>Fecha</th><th>Pedido #</th><th>Cliente</th><th>Detalle</th><th>Pago</th><th>Monto (S/)</th>
-        </tr>
-        {% for v in ventas_mes_ordenadas %}
-          <tr>
-            <td>{{ v.fecha }}</td>
-            <td>#{{ v.pedido_id }}</td>
-            <td><strong>{{ v.cliente }}</strong></td>
-            <td>{{ v.detalle }}</td>
-            <td><span class="badge badge-pago">{{ v.forma_pago }}</span></td>
-            <td><strong>S/ {{ "%.2f"|format(v.total) }}</strong></td>
-          </tr>
-        {% else %}
-          <tr><td colspan="6">Sin registros de ventas para este mes.</td></tr>
+          <tr><td colspan="8">No hay pedidos cancelados o marcados como no contesta.</td></tr>
         {% endfor %}
       </table>
     </div>
@@ -845,30 +714,484 @@ HTML = """
 </html>
 """
 
-def requiere_licencia_y_login(f):
-    @wraps(f)
-    def decorada(*args, **kwargs):
-        data = cargar_datos()
-        vigente, _, _ = estado_licencia(data)
-        if not vigente:
-            session.pop("usuario", None)
-            return redirect(url_for("licencia_vencida"))
-        usuario = session.get("usuario")
-        if not usuario or usuario not in USUARIOS_OPERADORES:
-            session.pop("usuario", None)
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorada
+HTML_BALANCE_CALENDARIO = """
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Balance del Mes — Calendario</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      max-width: 1100px;
+      margin: 18px auto;
+      padding: 0 14px;
+      background: #0f172a;
+      color: #1e293b;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: #f8fafc;
+      margin-bottom: 16px;
+    }
+    .topbar h1 { margin: 0; font-size: 22px; }
+    .btn-volver {
+      background: #334155;
+      color: #f8fafc;
+      padding: 7px 14px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid #475569;
+    }
+    .btn-volver:hover { background: #475569; }
+    .card {
+      background: #ffffff;
+      padding: 18px;
+      border-radius: 12px;
+      margin-bottom: 18px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.18);
+      border-top: 5px solid #2563eb;
+    }
+    .fila { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+    select {
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+      font-weight: 600;
+    }
 
-def redirigir_tablero(ok="", err="", mes=""):
+    .balance-mes-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+    .balance-mes-box h2 { margin: 0 0 10px; font-size: 17px; color: #1e3a8a; }
+    .resumen-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .res-item {
+      background: #ffffff;
+      border: 1px solid #dbeafe;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .res-item small { display: block; font-size: 11.5px; color: #64748b; font-weight: 700; }
+    .res-item strong { font-size: 17px; color: #0f172a; }
+
+    .grafico-wrap {
+      background: #ffffff;
+      border: 1px solid #dbeafe;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .barra-fila {
+      display: grid;
+      grid-template-columns: 78px 1fr 185px;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 12.5px;
+    }
+    .barra-pista {
+      background: #e2e8f0;
+      border-radius: 999px;
+      height: 15px;
+      overflow: hidden;
+    }
+    .barra-relleno {
+      height: 100%;
+      background: #16a34a;
+      border-radius: 999px;
+    }
+
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .cal-cabecera {
+      background: #1e293b;
+      color: #f8fafc;
+      text-align: center;
+      padding: 8px 4px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+    }
+    .cal-vacio {
+      background: #f8fafc;
+      border: 1px dashed #e2e8f0;
+      border-radius: 10px;
+      min-height: 92px;
+    }
+    .cal-dia-link {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 92px;
+      padding: 8px;
+      border-radius: 10px;
+      text-decoration: none;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      color: #0f172a;
+      transition: transform .12s ease, border-color .12s ease, background .12s ease;
+    }
+    .cal-dia-link:hover {
+      transform: translateY(-2px);
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+    .cal-dia-link.con-venta {
+      background: #f0fdf4;
+      border-color: #86efac;
+    }
+    .cal-dia-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .cal-num { font-size: 15px; font-weight: 800; color: #0f172a; }
+    .cal-monto { font-size: 12.5px; font-weight: 800; color: #15803d; margin-top: 3px; }
+    .cal-meta { font-size: 11px; color: #475569; line-height: 1.3; }
+    .badge-hoy {
+      background: #2563eb;
+      color: #fff;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="topbar">
+    <h1>Balance del Mes — Calendario</h1>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <a href="{{ url_for('index') }}" class="btn-volver">← Volver a Pedidos</a>
+      <a href="{{ url_for('logout') }}" class="btn-volver">Cerrar sesión</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <form method="get" action="{{ url_for('balance_mensual') }}" class="fila">
+      <label for="mes" style="font-weight:700; font-size:14px;">Mes de balance (3 años):</label>
+      <select id="mes" name="mes" onchange="this.form.submit()">
+        {% for m in meses_disponibles %}
+          <option value="{{ m.clave }}" {% if m.clave == mes_seleccionado %}selected{% endif %}>{{ m.etiqueta }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    <div class="balance-mes-box">
+      <h2>Balance del mes — {{ etiqueta_mes_seleccionado }}</h2>
+      <div class="resumen-grid">
+        <div class="res-item">
+          <small>TOTAL DINERO INGRESADO</small>
+          <strong>S/ {{ "%.2f"|format(total_mes) }}</strong>
+        </div>
+        <div class="res-item">
+          <small>PEDIDOS ENVIADOS (MES)</small>
+          <strong>{{ enviados_mes }}</strong>
+        </div>
+        <div class="res-item">
+          <small>PEDIDOS CANCELADOS (MES)</small>
+          <strong>{{ cancelados_mes }}</strong>
+        </div>
+      </div>
+
+      <div class="grafico-wrap">
+        <strong style="display:block; margin-bottom:8px; font-size:13px; color:#0f172a;">
+          Gráfico de ventas por día en {{ etiqueta_mes_seleccionado }}
+        </strong>
+        {% for celda in dias_mes %}
+          {% set pct = (celda.total / max_venta_dia * 100) if max_venta_dia > 0 else 0 %}
+          <div class="barra-fila">
+            <span><strong>{{ celda.dia_corto }} {{ celda.dia }}</strong></span>
+            <div class="barra-pista">
+              <div class="barra-relleno" style="width: {{ '%.1f'|format(pct) }}%;"></div>
+            </div>
+            <span style="text-align:right; font-weight:700;">
+              S/ {{ "%.2f"|format(celda.total) }} · {{ celda.cantidad }} env · {{ celda.cancelados }} canc
+            </span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <p style="margin:0 0 8px; font-size:13.5px; color:#475569;">
+      Aprieta cualquier día del calendario para abrir una ventana nueva con las ventas guardadas de ese día:
+    </p>
+
+    <div class="cal-grid">
+      {% for cab in cabeceras_dias %}
+        <div class="cal-cabecera">{{ cab }}</div>
+      {% endfor %}
+
+      {% for celda in celdas_calendario %}
+        {% if celda is none %}
+          <div class="cal-vacio"></div>
+        {% else %}
+          <a href="{{ url_for('balance_dia', fecha_iso=celda.fecha) }}"
+             target="_blank"
+             rel="noopener noreferrer"
+             class="cal-dia-link {% if celda.total > 0 %}con-venta{% endif %}">
+            <div class="cal-dia-top">
+              <span class="cal-num">{{ celda.dia }}</span>
+              <span>{{ celda.dia_corto }}</span>
+            </div>
+            <div>
+              <div class="cal-monto">S/ {{ "%.2f"|format(celda.total) }}</div>
+              <div class="cal-meta">
+                Env: {{ celda.cantidad }} · Canc: {{ celda.cancelados }}
+                {% if celda.es_hoy %}<span class="badge-hoy">Hoy</span>{% endif %}
+              </div>
+            </div>
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+</body>
+</html>
+"""
+
+HTML_BALANCE_DIA = """
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Balance del {{ fecha_titulo }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      max-width: 1040px;
+      margin: 18px auto;
+      padding: 0 14px;
+      background: #0f172a;
+      color: #1e293b;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: #f8fafc;
+      margin-bottom: 16px;
+    }
+    .topbar h1 { margin: 0; font-size: 21px; }
+    .btn-link {
+      background: #2563eb;
+      color: #ffffff;
+      padding: 7px 13px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .btn-sec {
+      background: #334155;
+      color: #f8fafc;
+      padding: 7px 13px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid #475569;
+    }
+    .card {
+      background: #ffffff;
+      padding: 18px;
+      border-radius: 12px;
+      margin-bottom: 18px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.18);
+      border-top: 5px solid #16a34a;
+    }
+    .balance-dia-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .stat-box {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .stat-box small { display: block; font-size: 11.5px; color: #64748b; font-weight: 700; }
+    .stat-box strong { font-size: 19px; color: #0f172a; }
+
+    .grafico-dia {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+    .g-fila {
+      display: grid;
+      grid-template-columns: 150px 1fr 90px;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .g-pista {
+      background: #e2e8f0;
+      border-radius: 999px;
+      height: 18px;
+      overflow: hidden;
+    }
+    .g-barra { height: 100%; border-radius: 999px; }
+    .g-barra.env { background: #16a34a; }
+    .g-barra.canc { background: #d97706; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #e2e8f0; padding: 9px; text-align: left; font-size: 13.5px; }
+    th { background: #f1f5f9; color: #0f172a; }
+    .badge-pago {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 700;
+      background: #e0e7ff;
+      color: #1d4ed8;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="topbar">
+    <h1>Balance del Día — {{ fecha_titulo }}</h1>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <a href="{{ url_for('balance_mensual', mes=mes_clave) }}" class="btn-link">← Calendario del mes</a>
+      <a href="{{ url_for('index') }}" class="btn-sec">Tablero de Pedidos</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="balance-dia-grid">
+      <div class="stat-box">
+        <small>TOTAL DINERO INGRESADO</small>
+        <strong>S/ {{ "%.2f"|format(total_dia) }}</strong>
+      </div>
+      <div class="stat-box">
+        <small>PEDIDOS ENVIADOS</small>
+        <strong>{{ ventas_dia|length }}</strong>
+      </div>
+      <div class="stat-box">
+        <small>PEDIDOS CANCELADOS</small>
+        <strong>{{ cancelados_dia|length }}</strong>
+      </div>
+    </div>
+
+    <div class="grafico-dia">
+      <strong style="display:block; margin-bottom:10px; font-size:13.5px; color:#0f172a;">
+        Gráfico del día: Enviados vs Cancelados ({{ fecha_titulo }})
+      </strong>
+      {% set pct_env = (ventas_dia|length / max_conteo * 100) if max_conteo > 0 else 0 %}
+      {% set pct_canc = (cancelados_dia|length / max_conteo * 100) if max_conteo > 0 else 0 %}
+      <div class="g-fila">
+        <span>Pedidos enviados</span>
+        <div class="g-pista"><div class="g-barra env" style="width: {{ '%.1f'|format(pct_env) }}%;"></div></div>
+        <span style="text-align:right;">{{ ventas_dia|length }}</span>
+      </div>
+      <div class="g-fila" style="margin-bottom:0;">
+        <span>Pedidos cancelados</span>
+        <div class="g-pista"><div class="g-barra canc" style="width: {{ '%.1f'|format(pct_canc) }}%;"></div></div>
+        <span style="text-align:right;">{{ cancelados_dia|length }}</span>
+      </div>
+    </div>
+
+    <h3 style="margin:0 0 8px;">Ventas guardadas de este día</h3>
+    <div class="table-wrap">
+      <table>
+        <tr>
+          <th># Venta</th>
+          <th>Pedido #</th>
+          <th>Cliente</th>
+          <th>Detalle</th>
+          <th>Pago</th>
+          <th>Monto (S/)</th>
+        </tr>
+        {% for v in ventas_dia %}
+          <tr>
+            <td>{{ v.id }}</td>
+            <td>#{{ v.pedido_id }}</td>
+            <td><strong>{{ v.cliente }}</strong></td>
+            <td>{{ v.detalle }}</td>
+            <td><span class="badge-pago">{{ v.forma_pago }}</span></td>
+            <td><strong>S/ {{ "%.2f"|format(v.total) }}</strong></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6">No hay ventas guardadas para {{ fecha_titulo }}.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <h3 style="margin:18px 0 8px;">Pedidos cancelados / no contesta de este día</h3>
+    <div class="table-wrap">
+      <table>
+        <tr>
+          <th>Pedido #</th>
+          <th>Cliente</th>
+          <th>Celular</th>
+          <th>Detalle</th>
+          <th>Pago</th>
+          <th>Monto (S/)</th>
+        </tr>
+        {% for c in cancelados_dia %}
+          <tr>
+            <td>#{{ c.id }}</td>
+            <td><strong>{{ c.cliente }}</strong></td>
+            <td>{{ c.celular }}</td>
+            <td>{{ c.detalle }}</td>
+            <td><span class="badge-pago">{{ c.forma_pago }}</span></td>
+            <td>S/ {{ "%.2f"|format(c.total) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6">No hay pedidos cancelados en {{ fecha_titulo }}.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+
+</body>
+</html>
+"""
+
+def redirigir_tablero(ok="", err=""):
     destino = url_for("index")
     params = []
     if ok:
         params.append("ok=" + quote(ok))
     if err:
         params.append("err=" + quote(err))
-    if mes:
-        params.append("mes=" + quote(mes))
     if params:
         destino += "?" + "&".join(params)
     resp = make_response(redirect(destino, code=303))
@@ -952,39 +1275,10 @@ def index():
     _, dias_restantes, fecha_cierre_texto = estado_licencia(data)
     activas = [op for op in data["opciones_venta"] if op.get("activa", True)]
     ventas = data.get("ventas_registradas", [])
-
-    hoy_str = fecha_hoy_peru().strftime("%Y-%m")
-    meses_set = {v.get("fecha", "")[:7] for v in ventas if len(v.get("fecha", "")) >= 7}
-    meses_set.add(hoy_str)
-    meses_disponibles = sorted(meses_set, reverse=True)
-
-    mes_sel = request.args.get("mes", hoy_str).strip()
-    if mes_sel not in meses_disponibles:
-        mes_sel = hoy_str
-
-    ventas_mes = [v for v in ventas if v.get("fecha", "").startswith(mes_sel)]
-    ventas_mes_ordenadas = sorted(ventas_mes, key=lambda x: (x.get("fecha", ""), x.get("id", 0)), reverse=True)
-
-    agrupado = defaultdict(lambda: {"cantidad": 0, "total": 0.0})
-    for v in ventas_mes:
-        f = v.get("fecha", "")
-        agrupado[f]["cantidad"] += 1
-        agrupado[f]["total"] += float(v.get("total", 0.0))
-
-    balance_diario = [
-        {"fecha": f, "cantidad": info["cantidad"], "total": round(info["total"], 2)}
-        for f, info in sorted(agrupado.items())
-    ]
-
-    total_mes = sum(d["total"] for d in balance_diario)
-    total_ventas_hist = sum(float(v.get("total", 0.0)) for v in ventas)
-    max_venta_dia = max((d["total"] for d in balance_diario), default=0.0)
-
-    dia_mayor = max(balance_diario, key=lambda x: x["total"]) if balance_diario else None
-    dia_menor = min(balance_diario, key=lambda x: x["total"]) if balance_diario else None
+    total_ventas_hist = round(sum(float(v.get("total", 0.0)) for v in ventas), 2)
 
     html = render_template_string(
-        HTML,
+        HTML_INDEX,
         usuario_actual=session.get("usuario", ""),
         fecha_cierre_texto=fecha_cierre_texto,
         dias_restantes=dias_restantes,
@@ -995,21 +1289,134 @@ def index():
         rechazados=data["pedidos_rechazados"],
         confirmado=data["ultimo_confirmado"],
         total_ventas_hist=total_ventas_hist,
-        ventas=ventas,
-        meses_disponibles=meses_disponibles,
-        mes_seleccionado=mes_sel,
-        total_mes=total_mes,
-        balance_diario=balance_diario,
-        dia_mayor=dia_mayor,
-        dia_menor=dia_menor,
-        max_venta_dia=max_venta_dia,
-        ventas_mes_ordenadas=ventas_mes_ordenadas,
         msg_ok=request.args.get("ok", ""),
         msg_err=request.args.get("err", ""),
     )
     resp = make_response(html)
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
+    return resp
+
+@app.route("/balance")
+@requiere_licencia_y_login
+def balance_mensual():
+    data = cargar_datos()
+    ventas = data.get("ventas_registradas", [])
+    rechazados = data.get("pedidos_rechazados", [])
+    hoy = fecha_hoy_peru()
+    hoy_str = hoy.strftime("%Y-%m")
+    hoy_iso = hoy.strftime("%Y-%m-%d")
+
+    meses_disponibles = generar_rango_3_anos_meses(hoy)
+    claves_validas = {m["clave"] for m in meses_disponibles}
+
+    mes_sel = request.args.get("mes", hoy_str).strip()
+    if mes_sel not in claves_validas:
+        mes_sel = hoy_str
+
+    etiqueta_mes_sel = next(m["etiqueta"] for m in meses_disponibles if m["clave"] == mes_sel)
+    anio_sel, mes_num = map(int, mes_sel.split("-"))
+
+    resumen_dia = defaultdict(lambda: {"cantidad": 0, "total": 0.0, "cancelados": 0})
+    for v in ventas:
+        f = v.get("fecha", "")
+        if f.startswith(mes_sel):
+            resumen_dia[f]["cantidad"] += 1
+            resumen_dia[f]["total"] += float(v.get("total", 0.0))
+
+    for c in rechazados:
+        f = c.get("fecha_cancelado") or c.get("fecha") or hoy_iso
+        if f.startswith(mes_sel):
+            resumen_dia[f]["cancelados"] += 1
+
+    primer_dia_semana, total_dias = calendar.monthrange(anio_sel, mes_num)
+    celdas_calendario = [None] * primer_dia_semana
+    dias_mes = []
+    total_mes = 0.0
+    enviados_mes = 0
+    cancelados_mes = 0
+
+    for dia_n in range(1, total_dias + 1):
+        fecha_obj = datetime(anio_sel, mes_num, dia_n).date()
+        fecha_iso = fecha_obj.strftime("%Y-%m-%d")
+        monto_dia = round(resumen_dia[fecha_iso]["total"], 2)
+        cant_dia = resumen_dia[fecha_iso]["cantidad"]
+        canc_dia = resumen_dia[fecha_iso]["cancelados"]
+
+        total_mes += monto_dia
+        enviados_mes += cant_dia
+        cancelados_mes += canc_dia
+
+        item_dia = {
+            "dia": dia_n,
+            "fecha": fecha_iso,
+            "dia_corto": DIAS_CORTO_ES[fecha_obj.weekday()],
+            "cantidad": cant_dia,
+            "cancelados": canc_dia,
+            "total": monto_dia,
+            "es_hoy": (fecha_iso == hoy_iso),
+        }
+        dias_mes.append(item_dia)
+        celdas_calendario.append(item_dia)
+
+    max_venta_dia = max((d["total"] for d in dias_mes), default=0.0)
+
+    html = render_template_string(
+        HTML_BALANCE_CALENDARIO,
+        meses_disponibles=meses_disponibles,
+        mes_seleccionado=mes_sel,
+        etiqueta_mes_seleccionado=etiqueta_mes_sel,
+        total_mes=round(total_mes, 2),
+        enviados_mes=enviados_mes,
+        cancelados_mes=cancelados_mes,
+        max_venta_dia=max_venta_dia,
+        dias_mes=dias_mes,
+        cabeceras_dias=["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
+        celdas_calendario=celdas_calendario,
+    )
+    resp = make_response(html)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+@app.route("/balance/dia/<fecha_iso>")
+@requiere_licencia_y_login
+def balance_dia(fecha_iso):
+    try:
+        fecha_obj = datetime.strptime(fecha_iso, "%Y-%m-%d").date()
+    except ValueError:
+        return redirect(url_for("balance_mensual"))
+
+    data = cargar_datos()
+    ventas = data.get("ventas_registradas", [])
+    rechazados = data.get("pedidos_rechazados", [])
+
+    ventas_dia = sorted(
+        [v for v in ventas if v.get("fecha") == fecha_iso],
+        key=lambda x: x.get("id", 0),
+        reverse=True,
+    )
+    cancelados_dia = sorted(
+        [c for c in rechazados if (c.get("fecha_cancelado") or c.get("fecha")) == fecha_iso],
+        key=lambda x: x.get("id", 0),
+        reverse=True,
+    )
+
+    total_dia = round(sum(float(v.get("total", 0.0)) for v in ventas_dia), 2)
+    max_conteo = max(len(ventas_dia), len(cancelados_dia), 1)
+    fecha_titulo = f"{DIAS_LARGO_ES[fecha_obj.weekday()]} {fecha_obj.day} de {MESES_ES[fecha_obj.month]} {fecha_obj.year}"
+    mes_clave = fecha_obj.strftime("%Y-%m")
+
+    html = render_template_string(
+        HTML_BALANCE_DIA,
+        fecha_titulo=fecha_titulo,
+        mes_clave=mes_clave,
+        ventas_dia=ventas_dia,
+        cancelados_dia=cancelados_dia,
+        total_dia=total_dia,
+        max_conteo=max_conteo,
+    )
+    resp = make_response(html)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
 
 @app.route("/agregar_opcion", methods=["POST"])
@@ -1099,12 +1506,14 @@ def marcar_enviado(pedido_id):
     for i, p in enumerate(data["pedidos_pendientes"]):
         if p["id"] == pedido_id:
             pedido_enviado = data["pedidos_pendientes"].pop(i)
+            fecha_envio = fecha_hoy_peru().strftime("%Y-%m-%d")
+            pedido_enviado["fecha_enviado"] = fecha_envio
             data["pedidos_enviados"].append(pedido_enviado)
             venta_id = data["contador_id"]
             data["contador_id"] += 1
             data["ventas_registradas"].append({
                 "id": venta_id,
-                "fecha": fecha_hoy_peru().strftime("%Y-%m-%d"),
+                "fecha": fecha_envio,
                 "pedido_id": pedido_enviado["id"],
                 "cliente": pedido_enviado["cliente"],
                 "detalle": pedido_enviado["detalle"],
@@ -1122,9 +1531,11 @@ def marcar_rechazado(origen, pedido_id):
     clave = "pedidos_pendientes" if origen == "pendientes" else "pedidos_enviados"
     for i, p in enumerate(data[clave]):
         if p["id"] == pedido_id:
-            data["pedidos_rechazados"].append(data[clave].pop(i))
+            pedido_canc = data[clave].pop(i)
+            pedido_canc["fecha_cancelado"] = fecha_hoy_peru().strftime("%Y-%m-%d")
+            data["pedidos_rechazados"].append(pedido_canc)
             guardar_datos(data)
-            return redirigir_tablero(ok=f"Pedido #{pedido_id} movido a No contesta / Ya no lo quiso.")
+            return redirigir_tablero(ok=f"Pedido #{pedido_id} movido a Cancelados / No contesta.")
     return redirigir_tablero()
 
 if __name__ == "__main__":
